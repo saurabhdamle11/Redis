@@ -105,12 +105,39 @@ std::string cmd_rpush(const Args&tokens){
   return ":"+std::to_string(all_lists[key].size())+ "\r\n";
 }
 
+std::string cmd_lrange(const Args&tokens){
+  if(tokens.size()<4){ return "-ERR wrong number of arguments for LRANGE\r\n";}
+  std::lock_guard<std::mutex>lk(mtx);
+  std::string key = tokens[1];
+
+  auto it = all_lists.find(key);
+  if(it == all_lists.end()){ return "*0\r\n"; }
+
+  auto& list = it->second;
+  long long size = (long long)list.size();
+  long long start = std::stoll(tokens[2]);
+  long long end   = std::stoll(tokens[3]);
+
+  if(start < 0) start = std::max(0LL, size + start);
+  if(end   < 0) end   = size + end;
+  if(end   >= size) end = size - 1;
+  if(start > end){ return "*0\r\n"; }
+
+  std::string response = "*" + std::to_string(end - start + 1) + "\r\n";
+  for(long long i = start; i <= end; ++i){
+    const std::string& elem = list[i];
+    response += "$" + std::to_string(elem.size()) + "\r\n" + elem + "\r\n";
+  }
+  return response;
+}
+
 const std::unordered_map<std::string, CommandHandler> command_table = {
   {"PING", cmd_ping},
   {"ECHO", cmd_echo},
   {"GET", cmd_get},
   {"SET", cmd_set},
   {"RPUSH", cmd_rpush},
+  {"LRANGE", cmd_lrange},
 };
 
 
