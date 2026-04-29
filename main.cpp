@@ -21,6 +21,7 @@ using CommandHandler = std::function<std::string(const Args&)>;
 using TimePoint = std::chrono::steady_clock::time_point;
 
 std::unordered_map<std::string, std::pair<std::string, std::optional<TimePoint>>> nakasha;
+std::unordered_map<std::string, std::vector<std::string>> all_lists;
 std::mutex mtx;
 
 std::vector<std::string> parse_resp(const std::string&raw){
@@ -94,11 +95,22 @@ std::string cmd_set(const Args&tokens){
   return "+OK\r\n";
 }
 
+std::string cmd_rpush(const Args&tokens){
+  if(tokens.size()<3){ return "-ERR wrong number of arguments for RPUSH, got less than 2 arguments\r\n";}
+  std::lock_guard<std::mutex> lk(mtx);
+  std::string key = tokens[1];
+  for(size_t i=2;i<tokens.size();++i){
+    all_lists[key].emplace_back(tokens[i]);
+  }
+  return ":"+std::to_string(all_lists[key].size())+ "\r\n";
+}
+
 const std::unordered_map<std::string, CommandHandler> command_table = {
   {"PING", cmd_ping},
   {"ECHO", cmd_echo},
   {"GET", cmd_get},
-  {"SET", cmd_set}
+  {"SET", cmd_set},
+  {"RPUSH", cmd_rpush},
 };
 
 

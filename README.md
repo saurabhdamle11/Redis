@@ -7,9 +7,13 @@ A ground-up implementation of a Redis compatible in-memory server written in C++
 - Listens on port **6379** (the default Redis port)
 - Speaks the **RESP (Redis Serialization Protocol)** wire format
 - Handles multiple clients concurrently using **POSIX threads** (one detached thread per connection)
+- Protects shared state with a mutex for thread-safe access
 - Supports the following commands:
-  - `PING` — responds with `+PONG`
-  - `ECHO <message>` — echoes the message back as a bulk string
+  - `PING` responds with `+PONG`
+  - `ECHO <message>` echoes the message back as a bulk string
+  - `SET <key> <value> [EX seconds | PX milliseconds]` stores a key with an optional TTL
+  - `GET <key>` retrieves a value, returning nil if the key is missing or expired
+  - `RPUSH <key> <value> [value ...]` appends one or more elements to the tail of a list
 
 ## How to build and run
 
@@ -23,6 +27,9 @@ Then connect with the official Redis CLI or `redis-cli`:
 ```bash
 redis-cli PING
 redis-cli ECHO "hello"
+redis-cli SET foo bar EX 30
+redis-cli GET foo
+redis-cli RPUSH mylist a b c
 ```
 
 ## Architecture
@@ -32,11 +39,16 @@ redis-cli ECHO "hello"
 | TCP server | `main.cpp` | Creates a socket, binds to port 6379, and accepts connections in a loop |
 | RESP parser | `parse_resp()` | Parses incoming RESP arrays into a vector of string tokens |
 | Client handler | `handle_client()` | Reads commands from a connected client and dispatches responses |
+| Key-value store | `nakasha` | An `unordered_map` from key to a value/expiry pair, guarded by a mutex |
+| List store | `all_lists` | An `unordered_map` from key to a vector of strings for list commands |
+| Command table | `command_table` | Maps command names to handler functions for O(1) dispatch |
 
 ## Roadmap
 
-- [ ] `SET` / `GET` commands with an in-memory hash map
-- [ ] Key expiry (`SET key value EX seconds`)
+- [x] `SET` / `GET` commands with an in-memory hash map
+- [x] Key expiry (`SET key value EX seconds` and `PX milliseconds`)
+- [x] `RPUSH` for list support
 - [ ] `DEL`, `EXISTS`, `KEYS` commands
+- [ ] `LRANGE`, `LPUSH`, `LPOP`, `RPOP` for full list operations
 - [ ] Persistence (RDB / AOF snapshots)
 - [ ] Pub/Sub
