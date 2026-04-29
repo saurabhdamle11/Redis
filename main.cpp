@@ -12,11 +12,15 @@
 #include <sstream>
 #include <functional>
 #include <unordered_map>
+#include <optional>
+#include <chrono>
+#include <mutex>
 
 using Args = std::vector<std::string>;
 using CommandHandler = std::function<std::string(const Args&)>;
+using TimePoint = std::chrono::steady_clock::time_point;
 
-std::unordered_map<std::string,std::string>nakasha;
+std::unordered_map<std::string, std::pair<std::string, std::optional<TimePoint>>> nakasha;
 std::mutex mtx;
 
 std::vector<std::string> parse_resp(const std::string&raw){
@@ -56,8 +60,14 @@ std::string cmd_get(const Args& tokens){
   if(tokens.size()<2){ return "-ERR wrong number of arguments for GET, got less than 1 arguments\r\n";}
   std::lock_guard<std::mutex>lk(mtx);
   std::string key = tokens[1];
-  if(nakasha.find(key)!=nakasha.end()){
-    return "$" + std::to_string(nakasha[key].size()) + "\r\n" + nakasha[key] + "\r\n";
+  auto it = nakasha.find(key);
+  if(it != nakasha.end()){
+    auto& [val, expiry] = it->second;
+    if(expiry.has_value() && std::chrono::steady_clock::now() > expiry.value()){
+      nakasha.erase(it);
+      return "$-1\r\n";
+    }
+    return "$" + std::to_string(val.size()) + "\r\n" + val + "\r\n";
   }
   return "$-1\r\n";
 }
@@ -66,8 +76,21 @@ std::string cmd_set(const Args&tokens){
   if(tokens.size()<3){ return "-ERR wrong number of arguments for SET, got less than 2 arguments\r\n";}
   std::lock_guard<std::mutex>lk(mtx);
   std::string key = tokens[1];
-  std::string value = tokens[2]; 
-  nakasha[key]=value;
+  std::string value = tokens[2];
+  std::optional<TimePoint> expiry = {};
+
+  if(tokens.size() >= 5){
+    std::string flag = tokens[3];
+    for(char&c : flag){ c = toupper(c); }
+    long long duration = std::stoll(tokens[4]);
+    if(flag == "EX"){
+      expiry = std::chrono::steady_clock::now() + std::chrono::seconds(duration);
+    } else if(flag == "PX"){
+      expiry = std::chrono::steady_clock::now() + std::chrono::milliseconds(duration);
+    }
+  }
+
+  nakasha[key] = {value, expiry};
   return "+OK\r\n";
 }
 
@@ -144,8 +167,6 @@ int main(int argc, char **argv) {
   // You can use print statements as follows for debugging, they'll be visible when running tests.
   std::cout << "Logs from your program will appear here!\n";
 
-  // Uncomment the code below to pass the first stage
-  // 
   // int client_fd = accept(server_fd, (struct sockaddr *) &client_addr, (socklen_t *) &client_addr_len);
   // std::cout << "Client connected\n";
 
