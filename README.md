@@ -1,6 +1,6 @@
-# Redis — Built from Scratch in C++
+# Redis built from Scratch in C++
 
-A ground-up implementation of a Redis-compatible in-memory server written in C++.
+A ground-up implementation of a Redis compatible in-memory server written in C++.
 
 ## What it does
 
