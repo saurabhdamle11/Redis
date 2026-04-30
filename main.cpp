@@ -131,6 +131,24 @@ std::string cmd_lrange(const Args&tokens){
   return response;
 }
 
+std::string cmd_lpush(const Args&tokens){
+  if(tokens.size()<3){return "-ERR wrong number of arguments for LPUSH, got less than 2 arguments\r\n";}
+  std::lock_guard<std::mutex> lk(mtx);
+  std::string key = tokens[1];
+  for(size_t i=2;i<tokens.size();++i){
+    all_lists[key].insert(all_lists[key].begin(),tokens[i]);
+  }
+  return ":"+std::to_string(all_lists[key].size())+ "\r\n";
+}
+
+std::string cmd_llen(const Args&tokens){
+  if(tokens.size()<2){return "-ERR wrong number of arguments for LLEN, got less than 2 arguments\r\n";}
+  std::lock_guard<std::mutex> lk(mtx);
+  std::string key = tokens[1];
+  if(all_lists.find(key)==all_lists.end()){return ":0\r\n";}
+  return ":"+std::to_string(all_lists[key].size())+"\r\n";
+}
+
 const std::unordered_map<std::string, CommandHandler> command_table = {
   {"PING", cmd_ping},
   {"ECHO", cmd_echo},
@@ -138,6 +156,8 @@ const std::unordered_map<std::string, CommandHandler> command_table = {
   {"SET", cmd_set},
   {"RPUSH", cmd_rpush},
   {"LRANGE", cmd_lrange},
+  {"LPUSH", cmd_lpush},
+  {"LLEN", cmd_llen},
 };
 
 

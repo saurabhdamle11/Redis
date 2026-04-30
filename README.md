@@ -43,12 +43,3 @@ redis-cli RPUSH mylist a b c
 | List store | `all_lists` | An `unordered_map` from key to a vector of strings for list commands |
 | Command table | `command_table` | Maps command names to handler functions for O(1) dispatch |
 
-## Roadmap
-
-- [x] `SET` / `GET` commands with an in-memory hash map
-- [x] Key expiry (`SET key value EX seconds` and `PX milliseconds`)
-- [x] `RPUSH` for list support
-- [ ] `DEL`, `EXISTS`, `KEYS` commands
-- [ ] `LRANGE`, `LPUSH`, `LPOP`, `RPOP` for full list operations
-- [ ] Persistence (RDB / AOF snapshots)
-- [ ] Pub/Sub
