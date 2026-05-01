@@ -66,5 +66,15 @@ std::unordered_map<std::string, CommandHandler> build_command_table(Store& store
                 out += "$" + std::to_string(e.size()) + "\r\n" + e + "\r\n";
             return out;
         }},
+
+        {"TYPE", [&store](const Args& args) -> std::string{
+            if(args.size()<2) {return "-ERR wrong number of arguments for TYPE\r\n";}
+            return "+" + store.type(args[1])+"\r\n";
+        }},
+
+        {"BLPOP", [&store](const Args&args) -> std::string{
+            if(args.size()<3) {return "-ERR wrong number of arguments for BLPOP\r\n";}
+            return store.blpop(args[1], std::stod(args[2]));
+        }}
     };
 }

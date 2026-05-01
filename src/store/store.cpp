@@ -20,10 +20,28 @@ std::optional<std::string> Store::get(const std::string& key) {
     return val;
 }
 
+void Store::wake_oldest_waiter(const std::string& key) {
+    auto wit = waiters_.find(key);
+    if (wit == waiters_.end() || wit->second.empty()) return;
+    auto lit = lists_.find(key);
+    if (lit == lists_.end() || lit->second.empty()) return;
+
+    // Pre-pop the element for the waiter so no other thread can steal it.
+    Waiter* w = wit->second.front();
+    wit->second.pop();
+    w->value = lit->second.front();
+    lit->second.erase(lit->second.begin());
+    if (lit->second.empty()) lists_.erase(lit);
+
+    w->ready = true;
+    w->cv.notify_one();
+}
+
 int Store::rpush(const std::string& key, const std::vector<std::string>& values) {
     std::lock_guard<std::mutex> lk(mtx_);
     auto& list = lists_[key];
     for (const auto& v : values) list.push_back(v);
+    wake_oldest_waiter(key);
     return static_cast<int>(list.size());
 }
 
@@ -31,6 +49,7 @@ int Store::lpush(const std::string& key, const std::vector<std::string>& values)
     std::lock_guard<std::mutex> lk(mtx_);
     auto& list = lists_[key];
     for (const auto& v : values) list.insert(list.begin(), v);
+    wake_oldest_waiter(key);
     return static_cast<int>(list.size());
 }
 
@@ -51,4 +70,56 @@ std::vector<std::string> Store::lrange(const std::string& key, int start, int st
     if (stop >= n) stop  = n - 1;
     if (start > stop) return {};
     return {list.begin() + start, list.begin() + stop + 1};
+}
+
+std::string Store::type(const std::string &key){
+    std::lock_guard<std::mutex> lk(mtx_);
+    if(kv_.count(key)){return "string";}
+    if(lists_.count(key)){return "list";}
+    return "none";
+}
+
+std::string Store::blpop(const std::string& key, double timeout_sec) {
+    std::unique_lock<std::mutex> lk(mtx_);
+
+    // Fast path: data available AND no one has been waiting longer.
+    auto& wq = waiters_[key];
+    auto lit = lists_.find(key);
+    if (wq.empty() && lit != lists_.end() && !lit->second.empty()) {
+        std::string val = lit->second.front();
+        lit->second.erase(lit->second.begin());
+        if (lit->second.empty()) lists_.erase(lit);
+        return "*2\r\n$" + std::to_string(key.size()) + "\r\n" + key + "\r\n"
+             + "$" + std::to_string(val.size()) + "\r\n" + val + "\r\n";
+    }
+
+    // Register at the back of the per-key queue (FIFO = longest waiter at front).
+    Waiter w;
+    wq.push(&w);
+
+    bool got_it = false;
+    if (timeout_sec == 0) {
+        w.cv.wait(lk, [&]{ return w.ready; });
+        got_it = true;
+    } else {
+        auto dur = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::duration<double>(timeout_sec));
+        got_it = w.cv.wait_for(lk, dur, [&]{ return w.ready; });
+    }
+
+    if (!got_it) {
+        // Timed out -- remove ourselves so we are never handed a value later.
+        auto& q = waiters_[key];
+        std::queue<Waiter*> cleaned;
+        while (!q.empty()) {
+            if (q.front() != &w) cleaned.push(q.front());
+            q.pop();
+        }
+        waiters_[key] = std::move(cleaned);
+        return "*-1\r\n";
+    }
+
+    // Value was pre-popped by wake_oldest_waiter; use it directly.
+    return "*2\r\n$" + std::to_string(key.size()) + "\r\n" + key + "\r\n"
+         + "$" + std::to_string(w.value.size()) + "\r\n" + w.value + "\r\n";
 }
