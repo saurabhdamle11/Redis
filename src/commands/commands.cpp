@@ -75,6 +75,27 @@ std::unordered_map<std::string, CommandHandler> build_command_table(Store& store
         {"BLPOP", [&store](const Args&args) -> std::string{
             if(args.size()<3) {return "-ERR wrong number of arguments for BLPOP\r\n";}
             return store.blpop(args[1], std::stod(args[2]));
+        }},
+
+        {"XADD", [&store](const Args&args) -> std::string{
+            if(args.size() <5 || (args.size()-3) %2 != 0){
+                return "-ERR wrong number of arguments for XADD\r\n";
+            }
+
+            std::vector<std::pair<std::string,std::string>> fields;
+
+            for(size_t i=3; i<args.size(); i+=2){
+                fields.emplace_back(args[i], args[i + 1]);
+            }
+
+            auto id = store.xadd(args[1],args[2],fields);
+
+            if(id.ms==0 && id.seq==0){
+                return "-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n";
+            }
+
+            std::string id_str = std::to_string(id.ms) + "-" + std::to_string(id.seq);
+            return "$" + std::to_string(id_str.size()) + "\r\n" + id_str + "\r\n";
         }}
     };
 }

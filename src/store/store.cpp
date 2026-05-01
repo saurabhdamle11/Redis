@@ -76,6 +76,7 @@ std::string Store::type(const std::string &key){
     std::lock_guard<std::mutex> lk(mtx_);
     if(kv_.count(key)){return "string";}
     if(lists_.count(key)){return "list";}
+    if(streams_.count(key)){return "stream";}
     return "none";
 }
 
@@ -122,4 +123,45 @@ std::string Store::blpop(const std::string& key, double timeout_sec) {
     // Value was pre-popped by wake_oldest_waiter; use it directly.
     return "*2\r\n$" + std::to_string(key.size()) + "\r\n" + key + "\r\n"
          + "$" + std::to_string(w.value.size()) + "\r\n" + w.value + "\r\n";
+}
+
+Store::StreamID Store::xadd(const std::string&key, const std::string&raw_id, const std::vector<std::pair<std::string, std::string>>&fields){
+    std::lock_guard<std::mutex> lk(mtx_);
+
+    auto& stream = streams_[key];
+
+    uint64_t now_ms = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()
+        ).count()
+    );
+
+    StreamID id;
+
+    if(raw_id == "*"){
+        id.ms = std::max(now_ms,stream.last_ms);
+        id.seq = (id.ms==stream.last_ms)? stream.last_seq+1:0;
+    }
+    else{
+        auto dash = raw_id.find('-');
+        id.ms = std::stoull(raw_id.substr(0,dash));
+        std::string seq_part = raw_id.substr(dash+1);
+        if(seq_part == "*"){
+            id.seq = (id.ms == stream.last_ms) ? stream.last_seq + 1: 0;
+        }
+        else{
+            id.seq = std::stoull(seq_part);
+        }
+    }
+
+    if(id.ms < stream.last_ms || (id.ms == stream.last_ms && id.seq<= stream.last_seq)){
+        return {0,0};
+    }
+
+    StreamEntry entry{id,fields};
+    stream.entries.emplace_hint(stream.entries.end(),id,entry);
+    stream.last_ms = id.ms;
+    stream.last_seq = id.seq;
+
+    return id;
 }
