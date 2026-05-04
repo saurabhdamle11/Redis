@@ -82,6 +82,10 @@ std::unordered_map<std::string, CommandHandler> build_command_table(Store& store
                 return "-ERR wrong number of arguments for XADD\r\n";
             }
 
+            if(args[2] == "0-0"){
+                return "-ERR The ID specified in XADD must be greater than 0-0\r\n";
+            }
+
             std::vector<std::pair<std::string,std::string>> fields;
 
             for(size_t i=3; i<args.size(); i+=2){

@@ -70,6 +70,19 @@ void test_xadd_same_ms_higher_seq(std::unordered_map<std::string, CommandHandler
               "$4\r\n10-1\r\n");
 }
 
+// ID 0-0 is always invalid and gets its own error message.
+void test_xadd_zero_zero_rejected(std::unordered_map<std::string, CommandHandler>& cmd) {
+    ASSERT_EQ(cmd["XADD"]({"XADD", "s_zero", "0-0", "f", "v"}),
+              "-ERR The ID specified in XADD must be greater than 0-0\r\n");
+}
+
+// 0-0 is also invalid when a stream already has entries.
+void test_xadd_zero_zero_rejected_nonempty(std::unordered_map<std::string, CommandHandler>& cmd) {
+    cmd["XADD"]({"XADD", "s_zero2", "1-1", "f", "v"});
+    ASSERT_EQ(cmd["XADD"]({"XADD", "s_zero2", "0-0", "f", "v2"}),
+              "-ERR The ID specified in XADD must be greater than 0-0\r\n");
+}
+
 // Wrong number of arguments (missing value for a field).
 void test_xadd_wrong_args(std::unordered_map<std::string, CommandHandler>& cmd) {
     // args.size() == 4 → (4-3) % 2 == 1 != 0 → error
@@ -129,6 +142,32 @@ void test_xadd_partial_auto_seq_new_ms(std::unordered_map<std::string, CommandHa
               "$5\r\n200-0\r\n");
 }
 
+// ms=0 with auto-seq on empty stream starts at 1 (special case per spec).
+void test_xadd_zero_ms_auto_seq_empty(std::unordered_map<std::string, CommandHandler>& cmd) {
+    ASSERT_EQ(cmd["XADD"]({"XADD", "s_0seq", "0-*", "foo", "bar"}),
+              "$3\r\n0-1\r\n");
+}
+
+// ms=0 with auto-seq increments normally after the first entry.
+void test_xadd_zero_ms_auto_seq_increment(std::unordered_map<std::string, CommandHandler>& cmd) {
+    cmd["XADD"]({"XADD", "s_0seqi", "0-*", "foo", "bar"});   // → 0-1
+    ASSERT_EQ(cmd["XADD"]({"XADD", "s_0seqi", "0-*", "bar", "baz"}),
+              "$3\r\n0-2\r\n");
+}
+
+// Non-zero ms with auto-seq on empty stream starts at 0.
+void test_xadd_nonzero_ms_auto_seq_empty(std::unordered_map<std::string, CommandHandler>& cmd) {
+    ASSERT_EQ(cmd["XADD"]({"XADD", "s_5seq", "5-*", "foo", "bar"}),
+              "$3\r\n5-0\r\n");
+}
+
+// Non-zero ms with auto-seq increments on the same ms.
+void test_xadd_nonzero_ms_auto_seq_increment(std::unordered_map<std::string, CommandHandler>& cmd) {
+    cmd["XADD"]({"XADD", "s_5seqi", "5-*", "foo", "bar"});   // → 5-0
+    ASSERT_EQ(cmd["XADD"]({"XADD", "s_5seqi", "5-*", "bar", "baz"}),
+              "$3\r\n5-1\r\n");
+}
+
 // Concurrency: two threads XADD to the same stream; both must succeed and
 // the stream must contain exactly 2 entries (verified via XADD rejecting a
 // duplicate ID that could only exist if locking were broken).
@@ -162,11 +201,17 @@ int main() {
     test_xadd_lower_id_rejected(cmd);
     test_xadd_lower_seq_rejected(cmd);
     test_xadd_same_ms_higher_seq(cmd);
+    test_xadd_zero_zero_rejected(cmd);
+    test_xadd_zero_zero_rejected_nonempty(cmd);
     test_xadd_wrong_args(cmd);
     test_xadd_too_few_args(cmd);
     test_xadd_auto_id(cmd);
     test_xadd_partial_auto_seq(cmd);
     test_xadd_partial_auto_seq_new_ms(cmd);
+    test_xadd_zero_ms_auto_seq_empty(cmd);
+    test_xadd_zero_ms_auto_seq_increment(cmd);
+    test_xadd_nonzero_ms_auto_seq_empty(cmd);
+    test_xadd_nonzero_ms_auto_seq_increment(cmd);
     test_xadd_concurrent(cmd);
 
     RUN_TESTS();
