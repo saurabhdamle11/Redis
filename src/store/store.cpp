@@ -125,6 +125,47 @@ std::string Store::blpop(const std::string& key, double timeout_sec) {
          + "$" + std::to_string(w.value.size()) + "\r\n" + w.value + "\r\n";
 }
 
+std::vector<Store::XRangeEntry> Store::xrange(const std::string& key,
+                                               uint64_t start_ms, uint64_t start_seq,
+                                               uint64_t end_ms,   uint64_t end_seq) {
+    std::lock_guard<std::mutex> lk(mtx_);
+
+    auto it = streams_.find(key);
+    if (it == streams_.end()) return {};
+
+    const auto& stream = it->second;
+    StreamID start_id{start_ms, start_seq};
+    StreamID end_id{end_ms, end_seq};
+
+    std::vector<XRangeEntry> result;
+    for (auto e = stream.entries.lower_bound(start_id);
+         e != stream.entries.upper_bound(end_id); ++e) {
+        const auto& entry = e->second;
+        std::string id_str = std::to_string(entry.id.ms) + "-" + std::to_string(entry.id.seq);
+        result.push_back({id_str, entry.fields});
+    }
+    return result;
+}
+
+std::vector<Store::XRangeEntry> Store::xread(const std::string& key,
+                                              uint64_t after_ms, uint64_t after_seq) {
+    std::lock_guard<std::mutex> lk(mtx_);
+
+    auto it = streams_.find(key);
+    if (it == streams_.end()) return {};
+
+    const auto& stream = it->second;
+    StreamID after{after_ms, after_seq};
+
+    std::vector<XRangeEntry> result;
+    for (auto e = stream.entries.upper_bound(after); e != stream.entries.end(); ++e) {
+        const auto& entry = e->second;
+        std::string id_str = std::to_string(entry.id.ms) + "-" + std::to_string(entry.id.seq);
+        result.push_back({id_str, entry.fields});
+    }
+    return result;
+}
+
 Store::StreamID Store::xadd(const std::string&key, const std::string&raw_id, const std::vector<std::pair<std::string, std::string>>&fields){
     std::lock_guard<std::mutex> lk(mtx_);
 

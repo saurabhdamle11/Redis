@@ -77,6 +77,88 @@ std::unordered_map<std::string, CommandHandler> build_command_table(Store& store
             return store.blpop(args[1], std::stod(args[2]));
         }},
 
+        {"XREAD", [&store](const Args& args) -> std::string {
+            // XREAD STREAMS key1 [key2...] id1 [id2...]
+            // args[1] must be STREAMS; remaining args split evenly into keys and ids
+            if (args.size() < 4) return "-ERR wrong number of arguments for XREAD\r\n";
+            std::string streams_kw = args[1];
+            for (char& c : streams_kw) c = static_cast<char>(toupper(c));
+            if (streams_kw != "STREAMS") return "-ERR syntax error\r\n";
+
+            size_t n = (args.size() - 2) / 2;
+            if ((args.size() - 2) % 2 != 0) return "-ERR syntax error\r\n";
+
+            auto parse_id = [](const std::string& s, uint64_t& ms, uint64_t& seq) {
+                auto dash = s.find('-');
+                if (dash == std::string::npos) {
+                    ms  = std::stoull(s);
+                    seq = 0;
+                } else {
+                    ms  = std::stoull(s.substr(0, dash));
+                    seq = std::stoull(s.substr(dash + 1));
+                }
+            };
+
+            std::string out = "*" + std::to_string(n) + "\r\n";
+            for (size_t i = 0; i < n; ++i) {
+                const std::string& key = args[2 + i];
+                uint64_t ms, seq;
+                parse_id(args[2 + n + i], ms, seq);
+
+                auto entries = store.xread(key, ms, seq);
+
+                out += "*2\r\n";
+                out += "$" + std::to_string(key.size()) + "\r\n" + key + "\r\n";
+                out += "*" + std::to_string(entries.size()) + "\r\n";
+                for (const auto& entry : entries) {
+                    out += "*2\r\n";
+                    out += "$" + std::to_string(entry.id.size()) + "\r\n" + entry.id + "\r\n";
+                    out += "*" + std::to_string(entry.fields.size() * 2) + "\r\n";
+                    for (const auto& [k, v] : entry.fields) {
+                        out += "$" + std::to_string(k.size()) + "\r\n" + k + "\r\n";
+                        out += "$" + std::to_string(v.size()) + "\r\n" + v + "\r\n";
+                    }
+                }
+            }
+            return out;
+        }},
+
+        {"XRANGE", [&store](const Args& args) -> std::string {
+            if (args.size() < 4) return "-ERR wrong number of arguments for XRANGE\r\n";
+
+            auto parse_id = [](const std::string& s, bool is_start,
+                               uint64_t& ms, uint64_t& seq) {
+                if (s == "-") { ms = 0; seq = 0; return; }
+                if (s == "+") { ms = UINT64_MAX; seq = UINT64_MAX; return; }
+                auto dash = s.find('-');
+                if (dash == std::string::npos) {
+                    ms  = std::stoull(s);
+                    seq = is_start ? 0 : UINT64_MAX;
+                } else {
+                    ms  = std::stoull(s.substr(0, dash));
+                    seq = std::stoull(s.substr(dash + 1));
+                }
+            };
+
+            uint64_t start_ms, start_seq, end_ms, end_seq;
+            parse_id(args[2], true,  start_ms, start_seq);
+            parse_id(args[3], false, end_ms,   end_seq);
+
+            auto entries = store.xrange(args[1], start_ms, start_seq, end_ms, end_seq);
+
+            std::string out = "*" + std::to_string(entries.size()) + "\r\n";
+            for (const auto& entry : entries) {
+                out += "*2\r\n";
+                out += "$" + std::to_string(entry.id.size()) + "\r\n" + entry.id + "\r\n";
+                out += "*" + std::to_string(entry.fields.size() * 2) + "\r\n";
+                for (const auto& [k, v] : entry.fields) {
+                    out += "$" + std::to_string(k.size()) + "\r\n" + k + "\r\n";
+                    out += "$" + std::to_string(v.size()) + "\r\n" + v + "\r\n";
+                }
+            }
+            return out;
+        }},
+
         {"XADD", [&store](const Args&args) -> std::string{
             if(args.size() <5 || (args.size()-3) %2 != 0){
                 return "-ERR wrong number of arguments for XADD\r\n";

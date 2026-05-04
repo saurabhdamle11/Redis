@@ -67,4 +67,16 @@ public:
     std::string type(const std::string& key);
     std::string blpop(const std::string& key, double timeout_sec);
     StreamID xadd(const std::string&key, const std::string&raw_id, const std::vector<std::pair<std::string,std::string>>&fields);
+
+    struct XRangeEntry{
+        std::string id;
+        std::vector<std::pair<std::string,std::string>>fields;
+    };
+
+    std::vector<XRangeEntry> xrange(const std::string& key,
+                                    uint64_t start_ms, uint64_t start_seq,
+                                    uint64_t end_ms,   uint64_t end_seq);
+
+    std::vector<XRangeEntry> xread(const std::string& key,
+                                   uint64_t after_ms, uint64_t after_seq);
 };
