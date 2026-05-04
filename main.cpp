@@ -2,9 +2,9 @@
 #include "server/server.h"
 #include "store/store.h"
 #include <arpa/inet.h>
+#include <cstdlib>
 #include <iostream>
 #include <sys/socket.h>
-#include <thread>
 #include <unistd.h>
 
 int main() {
@@ -18,10 +18,7 @@ int main() {
     }
 
     int reuse = 1;
-    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
-        std::cerr << "setsockopt failed\n";
-        return 1;
-    }
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 
     struct sockaddr_in addr{};
     addr.sin_family      = AF_INET;
@@ -33,27 +30,22 @@ int main() {
         return 1;
     }
 
-    if (listen(server_fd, 5) != 0) {
+    if (listen(server_fd, 128) != 0) {
         std::cerr << "listen failed\n";
         return 1;
     }
+
+    const char* pw_env = std::getenv("REDIS_PASSWORD");
+    std::string password = pw_env ? pw_env : "";
+    if (!password.empty())
+        std::cout << "Password authentication enabled.\n";
 
     Store store;
     auto commands = build_command_table(store);
 
     std::cout << "Listening on port 6379...\n";
-
-    while (true) {
-        struct sockaddr_in client_addr{};
-        socklen_t client_len = sizeof(client_addr);
-        int client_fd = accept(server_fd, reinterpret_cast<struct sockaddr*>(&client_addr), &client_len);
-        if (client_fd < 0) {
-            std::cerr << "Accept failed\n";
-            continue;
-        }
-        std::cout << "Client connected\n";
-        std::thread([client_fd, &commands] { handle_client(client_fd, commands); }).detach();
-    }
+    Server server(server_fd, commands, password);
+    server.run();
 
     close(server_fd);
     return 0;
