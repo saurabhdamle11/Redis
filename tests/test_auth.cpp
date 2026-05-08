@@ -1,18 +1,20 @@
 #include "test_runner.h"
+#include "acl/acl.h"
 #include "commands/commands.h"
-#include "resp/resp.h"
 #include "store/store.h"
 #include <string>
 #include <vector>
 
-// Minimal harness that replicates the auth gate in Server::on_readable.
-struct AuthHarness {
-    std::string password;
+// Replicates the AUTH-and-dispatch path in Server::on_readable, but without
+// touching sockets so the gate logic can be exercised in isolation.
+struct Harness {
+    Acl& acl;
     bool authenticated;
+    std::string username = "default";
     std::unordered_map<std::string, CommandHandler>& cmd;
 
-    AuthHarness(const std::string& pw, std::unordered_map<std::string, CommandHandler>& c)
-        : password(pw), authenticated(pw.empty()), cmd(c) {}
+    Harness(Acl& a, std::unordered_map<std::string, CommandHandler>& c)
+        : acl(a), authenticated(a.default_user_is_open()), cmd(c) {}
 
     std::string dispatch(const std::vector<std::string>& tokens) {
         if (tokens.empty()) return "";
@@ -20,89 +22,101 @@ struct AuthHarness {
         for (char& c : name) c = static_cast<char>(toupper(c));
 
         if (name == "AUTH") {
-            if (password.empty())
-                return "-ERR Client sent AUTH, but no password is set.\r\n";
-            if (tokens.size() < 2)
-                return "-ERR wrong number of arguments for AUTH\r\n";
-            if (tokens[1] == password) { authenticated = true;  return "+OK\r\n"; }
-            authenticated = false;
-            return "-ERR invalid username-password pair or user is disabled.\r\n";
+            std::string user, pass;
+            if (tokens.size() == 2)      { user = "default"; pass = tokens[1]; }
+            else if (tokens.size() == 3) { user = tokens[1]; pass = tokens[2]; }
+            else return "-ERR wrong number of arguments for AUTH\r\n";
+
+            auto r = acl.authenticate(user, pass);
+            if (!r) {
+                authenticated = false;
+                return "-WRONGPASS invalid username-password pair or user is disabled.\r\n";
+            }
+            username = *r;
+            authenticated = true;
+            return "+OK\r\n";
         }
 
-        if (!authenticated)
-            return "-NOAUTH Authentication required.\r\n";
+        if (!acl.user_enabled(username)) authenticated = false;
+        if (!authenticated) return "-NOAUTH Authentication required.\r\n";
+
+        if (!acl.command_allowed(username, name))
+            return "-NOPERM denied\r\n";
 
         auto it = cmd.find(name);
         return it != cmd.end() ? it->second(tokens) : "-ERR unknown command\r\n";
     }
 };
 
-// No password set — every connection is immediately authenticated.
-void test_no_password_open_access(std::unordered_map<std::string, CommandHandler>& cmd) {
-    AuthHarness h("", cmd);
+// Default user (open: on + nopass) — every connection is authenticated immediately.
+void test_default_user_open(std::unordered_map<std::string, CommandHandler>& cmd) {
+    Acl acl;
+    Harness h(acl, cmd);
     ASSERT_TRUE(h.authenticated);
     ASSERT_EQ(h.dispatch({"PING"}), "+PONG\r\n");
 }
 
-// No password set — AUTH returns a specific error.
-void test_auth_when_no_password_configured(std::unordered_map<std::string, CommandHandler>& cmd) {
-    AuthHarness h("", cmd);
-    ASSERT_EQ(h.dispatch({"AUTH", "anything"}),
-              "-ERR Client sent AUTH, but no password is set.\r\n");
-}
+// Once the default user has a password, fresh connections are unauthenticated.
+void test_default_user_password(std::unordered_map<std::string, CommandHandler>& cmd) {
+    Acl acl;
+    std::string err;
+    acl.set_user("default", {"on", "resetpass", ">secret", "~*", "+@all"}, err);
 
-// Correct password authenticates the connection.
-void test_correct_password_authenticates(std::unordered_map<std::string, CommandHandler>& cmd) {
-    AuthHarness h("secret", cmd);
+    Harness h(acl, cmd);
     ASSERT_FALSE(h.authenticated);
+    ASSERT_EQ(h.dispatch({"PING"}), "-NOAUTH Authentication required.\r\n");
     ASSERT_EQ(h.dispatch({"AUTH", "secret"}), "+OK\r\n");
     ASSERT_TRUE(h.authenticated);
+    ASSERT_EQ(h.dispatch({"PING"}), "+PONG\r\n");
 }
 
-// Wrong password leaves connection unauthenticated.
 void test_wrong_password_rejected(std::unordered_map<std::string, CommandHandler>& cmd) {
-    AuthHarness h("secret", cmd);
+    Acl acl;
+    std::string err;
+    acl.set_user("default", {"on", "resetpass", ">secret", "~*", "+@all"}, err);
+
+    Harness h(acl, cmd);
     ASSERT_EQ(h.dispatch({"AUTH", "wrong"}),
-              "-ERR invalid username-password pair or user is disabled.\r\n");
+              "-WRONGPASS invalid username-password pair or user is disabled.\r\n");
     ASSERT_FALSE(h.authenticated);
 }
 
-// Commands before AUTH are blocked with NOAUTH.
-void test_command_before_auth_blocked(std::unordered_map<std::string, CommandHandler>& cmd) {
-    AuthHarness h("secret", cmd);
-    ASSERT_EQ(h.dispatch({"PING"}), "-NOAUTH Authentication required.\r\n");
-    ASSERT_EQ(h.dispatch({"SET",  "k", "v"}), "-NOAUTH Authentication required.\r\n");
-    ASSERT_EQ(h.dispatch({"GET",  "k"}), "-NOAUTH Authentication required.\r\n");
+void test_two_form_auth(std::unordered_map<std::string, CommandHandler>& cmd) {
+    Acl acl;
+    std::string err;
+    // Lock down the default user so connections start unauthenticated.
+    acl.set_user("default", {"on", "resetpass", ">d-pw", "~*", "+@all"}, err);
+    acl.set_user("alice",   {"on", ">pw", "+@all", "~*"}, err);
+
+    Harness h(acl, cmd);
+    ASSERT_FALSE(h.authenticated);
+    ASSERT_EQ(h.dispatch({"AUTH", "alice", "wrong"}),
+              "-WRONGPASS invalid username-password pair or user is disabled.\r\n");
+    ASSERT_EQ(h.dispatch({"AUTH", "alice", "pw"}), "+OK\r\n");
+    ASSERT_EQ(h.username, "alice");
 }
 
-// Commands work normally after AUTH.
-void test_commands_work_after_auth(std::unordered_map<std::string, CommandHandler>& cmd) {
-    AuthHarness h("secret", cmd);
-    h.dispatch({"AUTH", "secret"});
-    ASSERT_EQ(h.dispatch({"PING"}), "+PONG\r\n");
-    h.dispatch({"SET", "k", "v"});
-    ASSERT_EQ(h.dispatch({"GET", "k"}), "$1\r\nv\r\n");
+void test_unknown_user_returns_wrongpass(std::unordered_map<std::string, CommandHandler>& cmd) {
+    Acl acl;
+    Harness h(acl, cmd);
+    ASSERT_EQ(h.dispatch({"AUTH", "ghost", "anything"}),
+              "-WRONGPASS invalid username-password pair or user is disabled.\r\n");
 }
 
-// AUTH with missing password argument returns an error.
 void test_auth_missing_argument(std::unordered_map<std::string, CommandHandler>& cmd) {
-    AuthHarness h("secret", cmd);
+    Acl acl;
+    Harness h(acl, cmd);
     ASSERT_EQ(h.dispatch({"AUTH"}),
               "-ERR wrong number of arguments for AUTH\r\n");
 }
 
-// Re-authenticating with the correct password on an already-authenticated
-// connection keeps the connection authenticated.
-void test_reauth_correct(std::unordered_map<std::string, CommandHandler>& cmd) {
-    AuthHarness h("secret", cmd);
-    h.dispatch({"AUTH", "secret"});
-    ASSERT_EQ(h.dispatch({"AUTH", "secret"}), "+OK\r\n");
-    ASSERT_TRUE(h.authenticated);
-}
-
-// Re-authenticating with a wrong password revokes access immediately.
+// Re-AUTH with a wrong password drops the connection back to unauthenticated.
 void test_reauth_wrong_revokes(std::unordered_map<std::string, CommandHandler>& cmd) {
-    AuthHarness h("secret", cmd);
+    Acl acl;
+    std::string err;
+    acl.set_user("default", {"on", "resetpass", ">secret", "~*", "+@all"}, err);
+
+    Harness h(acl, cmd);
     h.dispatch({"AUTH", "secret"});
     ASSERT_TRUE(h.authenticated);
     h.dispatch({"AUTH", "wrong"});
@@ -110,19 +124,45 @@ void test_reauth_wrong_revokes(std::unordered_map<std::string, CommandHandler>& 
     ASSERT_EQ(h.dispatch({"PING"}), "-NOAUTH Authentication required.\r\n");
 }
 
+// A user disabled mid-session is locked out on the next dispatch.
+void test_user_disabled_mid_session(std::unordered_map<std::string, CommandHandler>& cmd) {
+    Acl acl;
+    std::string err;
+    acl.set_user("alice", {"on", ">pw", "+@all", "~*"}, err);
+
+    Harness h(acl, cmd);
+    h.dispatch({"AUTH", "alice", "pw"});
+    ASSERT_TRUE(h.authenticated);
+
+    acl.set_user("alice", {"off"}, err);
+    ASSERT_EQ(h.dispatch({"PING"}), "-NOAUTH Authentication required.\r\n");
+}
+
+// NOPERM kicks in for commands the user is not allowed to run.
+void test_noperm_for_denied_command(std::unordered_map<std::string, CommandHandler>& cmd) {
+    Acl acl;
+    std::string err;
+    acl.set_user("reader", {"on", ">pw", "+@read", "~*"}, err);
+
+    Harness h(acl, cmd);
+    h.dispatch({"AUTH", "reader", "pw"});
+    ASSERT_TRUE(h.authenticated);
+    ASSERT_EQ(h.dispatch({"SET", "k", "v"}), "-NOPERM denied\r\n");
+}
+
 int main() {
     Store store;
     auto cmd = build_command_table(store);
 
-    test_no_password_open_access(cmd);
-    test_auth_when_no_password_configured(cmd);
-    test_correct_password_authenticates(cmd);
+    test_default_user_open(cmd);
+    test_default_user_password(cmd);
     test_wrong_password_rejected(cmd);
-    test_command_before_auth_blocked(cmd);
-    test_commands_work_after_auth(cmd);
+    test_two_form_auth(cmd);
+    test_unknown_user_returns_wrongpass(cmd);
     test_auth_missing_argument(cmd);
-    test_reauth_correct(cmd);
     test_reauth_wrong_revokes(cmd);
+    test_user_disabled_mid_session(cmd);
+    test_noperm_for_denied_command(cmd);
 
     RUN_TESTS();
 }
